@@ -1,0 +1,25 @@
+ECHO "=== Contexto VENDAS | Redis (chave-valor / cache) | Foco: performance e TTL ==="
+DEL sessao:abc123 carrinho:abc123
+ECHO "--- 1. Criar a sessao do usuario (expira em 30 min = 1800 s) ---"
+HSET sessao:abc123 usuario_id 42 nome "Ana Souza" criada_em "2026-11-24T10:00:00"
+EXPIRE sessao:abc123 1800
+ECHO "--- 2. Montar o carrinho (hash: sku -> quantidade) ---"
+HSET carrinho:abc123 CEL-001 1
+HSET carrinho:abc123 CAM-001 2
+EXPIRE carrinho:abc123 1800
+ECHO "--- 3. Cliente adiciona mais 1 camiseta (atomico, O(1)) ---"
+HINCRBY carrinho:abc123 CAM-001 1
+ECHO "--- 4. Recuperar a sessao e o carrinho ---"
+HGETALL sessao:abc123
+HGETALL carrinho:abc123
+HLEN carrinho:abc123
+ECHO "--- 5. Tempo restante ate expirar (segundos) ---"
+TTL sessao:abc123
+TTL carrinho:abc123
+ECHO "--- 6. Cliente remove o celular do carrinho ---"
+HDEL carrinho:abc123 CEL-001
+HGETALL carrinho:abc123
+ECHO "--- 7. Cada interacao renova o TTL (sessao deslizante) ---"
+EXPIRE sessao:abc123 1800
+EXPIRE carrinho:abc123 1800
+TTL carrinho:abc123

@@ -1,0 +1,103 @@
+name: Validar scripts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  financeiro-postgresql:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Executar faturas.sql
+        run: psql -v ON_ERROR_STOP=1 -f financeiro/faturas.sql
+
+      - name: Conferir total faturado (2589.80)
+        run: |
+          total=$(psql -tAc "SELECT SUM(valor) FROM faturas")
+          echo "Total faturado: $total"
+          test "$total" = "2589.80"
+
+      - name: Executar bonus_transacao.sql (erros dos casos 2 e 3 sao esperados)
+        run: psql -f financeiro/bonus_transacao.sql
+
+      - name: Conferir que a transacao sem saldo foi desfeita
+        run: |
+          saldos=$(psql -tAc "SELECT string_agg(saldo::text, ',' ORDER BY id) FROM contas")
+          echo "Saldos (Ana,Bruno): $saldos"
+          test "$saldos" = "300.00,300.00"
+
+  estoque-mongodb:
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Executar produtos.js
+        run: |
+          docker cp estoque/produtos.js ${{ job.services.mongo.id }}:/tmp/produtos.js
+          docker exec ${{ job.services.mongo.id }} mongosh --quiet /tmp/produtos.js
+
+      - name: Conferir 2 produtos com esquemas diferentes
+        run: |
+          r=$(docker exec ${{ job.services.mongo.id }} mongosh --quiet estoque --eval '
+            const cel = db.produtos.countDocuments({ "especificacoes.bateria_mah": { $exists: true } });
+            const cam = db.produtos.countDocuments({ "especificacoes.cor": { $exists: true } });
+            print(db.produtos.countDocuments() + "," + cel + "," + cam)')
+          echo "total,celular,camiseta: $r"
+          test "$r" = "2,1,1"
+
+  vendas-redis:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Executar carrinho.redis
+        run: docker exec -i ${{ job.services.redis.id }} redis-cli < vendas/carrinho.redis
+
+      - name: Conferir carrinho e TTL
+        run: |
+          id=${{ job.services.redis.id }}
+          qtd=$(docker exec $id redis-cli HGET carrinho:abc123 CAM-001)
+          ttl=$(docker exec $id redis-cli TTL carrinho:abc123)
+          echo "CAM-001 no carrinho: $qtd | TTL: $ttl s"
+          test "$qtd" = "3"
+          test "$ttl" -gt 0
